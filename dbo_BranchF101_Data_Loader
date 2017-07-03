@@ -1,0 +1,99 @@
+USE [EBANK]
+GO
+/****** Object:  StoredProcedure [dbo].[BranchF101_Data_Loader]    Script Date: 23.05.2017 16:08:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER PROCEDURE [dbo].[BranchF101_Data_Loader] 
+
+	@RSO				tinyint			= 0,	-- 0/1 ( Hide/show a Result set )
+	@ErrText			varchar(3000)	= NULL output 
+AS
+BEGIN
+SET NOCOUNT ON
+
+    DECLARE 
+    @EoL				char(2),        --\r & \n
+    @MessageType		varchar(20),    --log variable
+    @ObjectName			varchar(128),   --log variable
+    @LogMessage			varchar(3000),  --log variable
+    @OperationCount		int,             --row quantity in a resultset
+	@InputDate			datetime = GETDATE(),
+	@SDate			datetime = (SELECT CAST(DATEADD(MM, DATEDIFF(MM,0,getdate()-32), 0) AS DATE)),
+	@EDate			datetime = (SELECT CAST(DATEADD(MM, DATEDIFF(MM,0,getdate()-32) + 1, -1) AS DATE)),
+	@Branch			varchar(3) = '000'
+
+	SET @EoL			= CHAR(13) + CHAR(10)
+    SET @MessageType	= 'BEGIN'
+    SET @ObjectName		= OBJECT_NAME(@@PROCID)
+    SET @OperationCount = 0
+    SET @ErrText		= ISNULL(@ErrText, '')
+/*===================================================================================================*/
+
+	--CURSOR DECLARATION
+	DECLARE @BranchCURSOR	CURSOR
+	SET		@BranchCURSOR = CURSOR SCROLL
+	FOR
+		SELECT br.Code 
+		FROM 
+			EBANK.dbo.vBranch br
+		ORDER BY br.Code
+
+---------------------------------------------------------------------------------------------------------------------------------------		
+		/*Открываем курсор по списку филиалов*/
+		OPEN @BranchCURSOR
+		/*Выбираем первую строку*/
+		FETCH NEXT FROM @BranchCURSOR INTO @Branch
+		/*Выполняем в цикле перебор строк*/
+		WHILE @@FETCH_STATUS = 0 
+		BEGIN
+		PRINT @Branch
+
+			BEGIN TRY
+				BEGIN
+				DELETE FROM EBANK.dbo.tBalance WHERE StartDate = @SDate AND EndDate = @EDate AND BranchCode = @Branch
+				EXEC EBANK.dbo.spGetF101FromDWH  @RSO = 0, @BeginDate = @SDate, @EndDate = @EDate, @BranchCode = @Branch
+				SET @OperationCount += @@ROWCOUNT
+				END
+			END TRY
+		--If something is going wrong...
+			BEGIN CATCH
+		
+				SELECT @ErrText = @ErrText + CONVERT(varchar(3000), ERROR_MESSAGE()) 
+				GOTO END_PROC
+
+			END CATCH
+
+			FETCH NEXT FROM @BranchCURSOR INTO @Branch
+		
+		END --Конец тела курсора
+		CLOSE @BranchCURSOR
+		DEALLOCATE @BranchCURSOR
+
+/*===================================================================================================*/
+
+END_PROC:
+    IF (@ErrText = '')
+        SELECT 
+            @LogMessage  = 'Импортировано: ' + @EoL + 'Строк - ' + CONVERT(varchar, @OperationCount), 
+            @MessageType = 'END' 
+    ELSE
+        SELECT @LogMessage = @ErrText, @MessageType = 'ERROR'
+
+		EXEC dbo.WRITE_TO_LOG 
+ 	    @Regim = @MessageType, 
+ 	    @FormID = null, 
+ 	    @ApplicationID = null, 
+ 	    @ObjectName = @ObjectName, 
+ 	    @LogMessage = @LogMessage
+
+    IF (@RSO > 0) 
+        SELECT 
+            @LogMessage  AS MessageText, 
+            @MessageType AS MessageType, 
+            0 AS IsCloseApp
+
+END
+
